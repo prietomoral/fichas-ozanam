@@ -34,10 +34,11 @@ function validarYNormalizar(raw, cantidadEsperada) {
       enunciado: (ej?.enunciado || ej?.question || ej?.statement || `Ejercicio ${idx + 1}`)
         .replace(/^\d+[\.\-\)]\s*/, "")
         .trim(),
-      contenido: ej?.contenido || ej?.content || "",
+      contenido: (ej?.contenido || ej?.content || "").replace(/\\n/g, "\n"),
       lineas_respuesta:
         ej?.lineas_respuesta !== undefined ? Number(ej.lineas_respuesta) : 2,
-      solucion: ej?.solucion || ej?.solution || ej?.answer || "Consultar con el educador.",
+      solucion: (ej?.solucion || ej?.solution || ej?.answer || "Consultar con el educador.")
+        .replace(/\\n/g, "\n"),
     })),
   };
 }
@@ -54,13 +55,15 @@ async function intentarConGoogle(prompt, cantidadEsperada, esquema) {
   for (const modelo of modelosGoogle) {
     try {
       const esGemma = modelo.startsWith("gemma");
+      const esLite = modelo.includes("lite");
+
       const config = esGemma
         ? { temperature: 0.9 }
         : {
             responseMimeType: "application/json",
             responseSchema: esquema,
             temperature: 0.9,
-            thinkingConfig: { thinkingBudget: 0 },
+            ...(esLite ? {} : { thinkingConfig: { thinkingBudget: 0 } }),
           };
 
       const promesa = ai.models.generateContent({
@@ -69,8 +72,9 @@ async function intentarConGoogle(prompt, cantidadEsperada, esquema) {
         config,
       });
 
+      const limiteMs = esGemma ? 8000 : 15000;
       const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout")), 25000)
+        setTimeout(() => reject(new Error("Timeout")), limiteMs)
       );
 
       const response = await Promise.race([promesa, timeout]);
@@ -190,7 +194,9 @@ export async function POST(request) {
     // Semilla única por cada clic para garantizar variedad total
     const semillaUnica = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     const enfoqueAleatorio =
-      ENFOQUES_VARIACION[Math.floor(Math.random() * ENFOQUES_VARIACION.length)];
+      datos.asignatura === "Matemáticas"
+        ? "Varía los números, el orden de los ejercicios y los contextos de los problemas respecto a cualquier ficha anterior."
+        : ENFOQUES_VARIACION[Math.floor(Math.random() * ENFOQUES_VARIACION.length)];
 
     const reglaComprension =
       datos.asignatura === "Comp. Lectora"
@@ -198,6 +204,24 @@ export async function POST(request) {
       REGLA ESPECIAL PARA COMPRENSIÓN LECTORA:
       - El ejercicio número 1 DEBE contener un texto de lectura completamente nuevo y original (de 150 a 300 palabras según el curso) dentro del campo "contenido", con enunciado "Lee atentamente el siguiente texto:" y "lineas_respuesta": 0.
       - Los ejercicios siguientes (del 2 al ${cantidad}) serán preguntas variadas de comprensión sobre ese texto.
+      `
+        : "";
+
+    const bloquesCalculo = Math.ceil(cantidad / 2);
+    const bloquesProblemas = cantidad - bloquesCalculo;
+
+    const reglaMatematicas =
+      datos.asignatura === "Matemáticas"
+        ? `
+      REGLA OBLIGATORIA PARA MATEMÁTICAS (CUMPLIR ESTRICTAMENTE):
+      - Los primeros ${bloquesCalculo} bloques (del 1 al ${bloquesCalculo}) DEBEN ser ÚNICAMENTE CÁLCULO NUMÉRICO PURO SIN TEXTO NI HISTORIAS.
+        * En "contenido" pon SOLO 4 operaciones matemáticas directas con apartados a), b), c), d) separadas por saltos de línea reales (nunca escribas los caracteres "\\n"), por ejemplo:
+          a) 348 × 26 = ____
+          b) 519 × 34 = ____
+          c) 704 × 18 = ____
+          d) 625 × 47 = ____
+        * PROHIBIDO poner nombres de personas, objetos o frases dentro de estos primeros ${bloquesCalculo} bloques. Solo números y signos matemáticos (+, -, ×, ÷, =, fracciones, etc. según el tema).
+      - Los últimos ${bloquesProblemas} bloques (del ${bloquesCalculo + 1} al ${cantidad}) DEBEN ser PROBLEMAS DE TEXTO aplicados al tema exacto "${datos.tema}", usando números COMPLETAMENTE DISTINTOS a los de los bloques de cálculo anteriores.
       `
         : "";
 
@@ -225,6 +249,7 @@ export async function POST(request) {
       6. En "solucion", pon la respuesta correcta de forma clara y completa.
       7. Responde SOLO con el objeto JSON válido.
       ${reglaComprension}
+      ${reglaMatematicas}
     `;
 
     const esquema = {
